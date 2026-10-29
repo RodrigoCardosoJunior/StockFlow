@@ -23,14 +23,17 @@ public class PedidoItemService {
     private final PedidoItemRepository pedidoItemRepository;
     private final PedidoRepository pedidoRepository;
     private final ProdutoRepository produtoRepository;
+    private final HistoricoPedidoService historicoPedidoService;
 
     public PedidoItemService(
             PedidoItemRepository pedidoItemRepository,
             PedidoRepository pedidoRepository,
-            ProdutoRepository produtoRepository) {
+            ProdutoRepository produtoRepository,
+            HistoricoPedidoService historicoPedidoService) {
         this.pedidoItemRepository = pedidoItemRepository;
         this.pedidoRepository = pedidoRepository;
         this.produtoRepository = produtoRepository;
+        this.historicoPedidoService = historicoPedidoService;
     }
 
     @Transactional
@@ -56,11 +59,19 @@ public class PedidoItemService {
             );
         }
 
+        // Guardamos os valores anteriores antes de alterar o pedido.
+        BigDecimal totalAnterior = pedido.getValorTotal();
+
         PedidoItem item = pedidoItemRepository
                 .findByPedido_IdAndProduto_Id(pedidoId, dto.produtoId())
                 .orElse(null);
 
-        if (item != null) {
+        boolean itemExistente = item != null;
+        Integer quantidadeAnterior = itemExistente
+                ? item.getQuantidade()
+                : null;
+
+        if (itemExistente) {
             item.setQuantidade(
                     Math.addExact(item.getQuantidade(), dto.quantidade())
             );
@@ -75,13 +86,51 @@ public class PedidoItemService {
 
         PedidoItem itemSalvo = pedidoItemRepository.save(item);
 
+        // Atualiza o total antes de registrar o histórico.
         recalcularTotal(pedido);
+
+        BigDecimal totalNovo = pedido.getValorTotal();
+
+        String tipoEvento = itemExistente
+                ? "QUANTIDADE_ALTERADA"
+                : "ITEM_ADICIONADO";
+
+        String descricao = itemExistente
+                ? "Quantidade do produto " + produto.getNome()
+                + " alterada de " + quantidadeAnterior
+                + " para " + itemSalvo.getQuantidade() + "."
+                : "Produto " + produto.getNome()
+                + " adicionado ao pedido com quantidade "
+                + itemSalvo.getQuantidade() + ".";
+
+        String dadosAnteriores = itemExistente
+                ? "{\"produtoId\":" + produto.getId()
+                + ",\"quantidade\":" + quantidadeAnterior
+                + ",\"valorTotal\":" + totalAnterior.toPlainString() + "}"
+                : "{\"produtoId\":" + produto.getId()
+                + ",\"quantidade\":0"
+                + ",\"valorTotal\":" + totalAnterior.toPlainString() + "}";
+
+        String dadosNovos =
+                "{\"produtoId\":" + produto.getId()
+                        + ",\"quantidade\":" + itemSalvo.getQuantidade()
+                        + ",\"valorTotal\":" + totalNovo.toPlainString() + "}";
+
+        historicoPedidoService.registrar(
+                pedido,
+                tipoEvento,
+                descricao,
+                dadosAnteriores,
+                dadosNovos,
+                null
+        );
 
         return PedidoItemMapper.paraResposta(itemSalvo);
     }
 
     @Transactional
     public void remover(Long pedidoId, Long produtoId) {
+
         Pedido pedido = pedidoRepository.findById(pedidoId)
                 .orElseThrow(() -> new EntityNotFoundException(
                         "Pedido não encontrado com o ID: " + pedidoId
@@ -95,10 +144,43 @@ public class PedidoItemService {
                         "Esse produto não está presente no pedido informado."
                 ));
 
+        // Captura os dados antes da remoção.
+        Integer quantidadeRemovida = item.getQuantidade();
+        BigDecimal precoUnitario = item.getPrecoUnitario();
+        BigDecimal subtotalRemovido = item.calcularSubtotal();
+        BigDecimal totalAnterior = pedido.getValorTotal();
+
+        String nomeProduto = item.getProduto().getNome();
+
         pedidoItemRepository.delete(item);
         pedidoItemRepository.flush();
 
+        // Recalcula o total sem o item removido.
         recalcularTotal(pedido);
+
+        BigDecimal totalNovo = pedido.getValorTotal();
+
+        String dadosAnteriores =
+                "{\"produtoId\":" + produtoId
+                        + ",\"quantidade\":" + quantidadeRemovida
+                        + ",\"precoUnitario\":" + precoUnitario.toPlainString()
+                        + ",\"subtotal\":" + subtotalRemovido.toPlainString()
+                        + ",\"valorTotal\":" + totalAnterior.toPlainString() + "}";
+
+        String dadosNovos =
+                "{\"produtoId\":" + produtoId
+                        + ",\"quantidade\":0"
+                        + ",\"valorTotal\":" + totalNovo.toPlainString() + "}";
+
+        historicoPedidoService.registrar(
+                pedido,
+                "ITEM_REMOVIDO",
+                "Produto " + nomeProduto + " removido do pedido. "
+                        + "Quantidade removida: " + quantidadeRemovida + ".",
+                dadosAnteriores,
+                dadosNovos,
+                null
+        );
     }
 
     @Transactional(readOnly = true)

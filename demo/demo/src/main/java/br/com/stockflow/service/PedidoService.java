@@ -92,20 +92,9 @@ public class PedidoService {
             );
         }
 
-        if (pedido.getStatus() == StatusPedido.CANCELADO
-                || pedido.getStatus() == StatusPedido.CONCLUIDO) {
-            throw new IllegalStateException(
-                    "Não é possível alterar o status de um pedido cancelado ou concluído."
-            );
-        }
-
         StatusPedido statusAnterior = pedido.getStatus();
 
-        if (statusAnterior == novoStatus) {
-            throw new IllegalStateException(
-                    "O pedido já possui esse status."
-            );
-        }
+        validarTransicaoStatus(statusAnterior, novoStatus);
 
         pedido.setStatus(novoStatus);
         Pedido pedidoSalvo = pedidoRepository.save(pedido);
@@ -121,5 +110,29 @@ public class PedidoService {
         );
 
         return PedidoMapper.paraResposta(pedidoSalvo);
+    }
+
+    private void validarTransicaoStatus(
+            StatusPedido statusAtual,
+            StatusPedido novoStatus) {
+
+        boolean transicaoPermitida = switch (statusAtual) {
+            case PENDENTE ->
+                    novoStatus == StatusPedido.CONFIRMADO
+                            || novoStatus == StatusPedido.CANCELADO;
+
+            case CONFIRMADO ->
+                    novoStatus == StatusPedido.CONCLUIDO
+                            || novoStatus == StatusPedido.CANCELADO;
+
+            case CANCELADO, CONCLUIDO -> false;
+        };
+
+        if (!transicaoPermitida) {
+            throw new IllegalStateException(
+                    "Transição de status não permitida: "
+                            + statusAtual + " para " + novoStatus + "."
+            );
+        }
     }
 }
